@@ -25,8 +25,19 @@ import asyncio
 
 
 class RateLimiter:
-    def __init__():
+    def __init__(self, limit: int, pool):
+        self.limit = limit
+        self.pool = pool
+        
+    """
+    Returns whether or not a request is within the rate limit
+    Utilizes the GCRA algorithm
+    """
+    def check_allowed(self, key: str, period: timedelta) -> bool:
+        
+        
         pass
+        
     
 """
 Data Object to store fields for api calls for a specific satellite 
@@ -48,21 +59,24 @@ class SatelliteFetcher:
             raise ValueError("Usage: API Key Required\n")
     
     
-
-
-async def fetch_satellite_data(input: SatelliteFetcher) -> dict:
+class SatelliteAPIClient:
     
-    url = f"{input.BASE_URL}/positions/{input.SAT_ID}/{input.LAT}/{input.LNG}/{input.ALT}/{input.SECONDS}/&apiKey={input.API_KEY}"
-    # Create an aiohttp session with SSL verification disabled
-    connector = aiohttp.TCPConnector(ssl=False)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        async with session.get(url) as response:
-            if response.status == 200:
-                data = await response.json()
-                return data
-            else:
-                print(f"HTTP Error: {response.status} - {await response.text()}")
+    def __init__(self, satellite_fetcher: SatelliteFetcher):
+        self.fetcher = satellite_fetcher
     
+    async def fetch_satellite_data(self) -> dict:
+        
+        url = f"{self.fetcher.BASE_URL}/positions/{self.fetcher.SAT_ID}/{self.fetcher.LAT}/{self.fetcher.LNG}/{self.fetcher.ALT}/{self.fetcher.SECONDS}/&apiKey={self.fetcher.API_KEY}"
+        # Create an aiohttp session with SSL verification disabled
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data
+                else:
+                    print(f"HTTP Error: {response.status} - {await response.text()}")
+        
 
 async def main():
 
@@ -76,11 +90,19 @@ async def main():
         ALT = 0,         # Altitude of your observation point
         SECONDS = 300,   # Number of seconds to predict
     )
+    
+    client = SatelliteAPIClient(data_client)
         
     try:
-        data = await fetch_satellite_data(data_client)
+        data = await client.fetch_satellite_data()
         print(data)
         print(type(data))
+        for key, value in data.items():
+            print(f"Key: {key}, Type: {type(value)}")
+            for v in value:
+                print(type(v))
+                for p in v:
+                    print(p)
     except Exception as e:
         print(f"An error occurred: {e}")
 
