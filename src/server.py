@@ -5,21 +5,20 @@ import logging
 from datetime import timedelta, datetime, timezone
 import asyncio
 import aiohttp 
-import aioredis
 import certifi
 from dataclasses import dataclass, field
 from typing import Optional, List 
 import json
 from dotenv import load_dotenv
+import logging 
 
 from flask import Flask, render_template, jsonify, request, send_from_directory, send_file
 from flask_socketio import SocketIO
 from flask_cors import CORS
- 
-import redis
-from redis.exceptions import LockError
 
-from n2yoasync import N2YO, N2YOSatelliteCategory
+from aioredis import Redis 
+from aioredis.exceptions import LockError
+
 
 
 import aiohttp
@@ -36,47 +35,54 @@ def call():
     return {"x" : ["x", "y"]}
 
 
-#GCRA algo with reids 
+#GCRA algo with redis 
 class RateLimiter:
-    def __init__(self, limit: int, pool, port: int = 6379, host='localhost'):
-        self.limit = limit
-        self.connection_pool = pool 
-        self.port = port 
-        self.host = host 
-        self.redis = redis.Redis(host=host, port=port)
     
+    """
+    Initialize the RateLimiter.
 
-    def is_allowed(self, key: str, period: timedelta) -> bool:
-        """
-        Returns whether or not a request is within the rate limit
-        Utilizes the GCRA algorithm:
+    :param limit: Maximum number of allowed requests within the period.
+    :param redis_pool: Shared Redis connection pool.
+    :param lock_timeout: Timeout for acquiring the Redis lock in seconds.
+    :param default_ttl: Time-to-live for the rate limit key in seconds.
+    """
+    def __init__(self, limit: int, pool: Redis, lock_timeout: int = 10, default_time_to_live: int = 3600):
+        self.pool = pool
+        self.limit = limit 
+        self.lock_timeout = lock_timeout
+        self.default_ttl = default_time_to_live
         
-        """
         
-        current_time = datetime.now(timezone.utc).isoformat()
+    async def is_allowed(self, period: timedelta, key: str) -> bool:
         
-        period = int(period.total_seconds())
+        current_time = datetime.now(timezone.utc).timestamp()
+        period_in_seconds = int(timedelta)
+        inter_request_interval = period_in_seconds / self.limit 
         
-        burst_tolerance = period / self.limit 
-        
-        self.redis.setnx(key, 0)
+        await self.redis.setnx(key, current_time)
         
         try:
-            with self.redis.lock(
-                "rate_limiter_lock" + key,
-                blocking_timeout=self.REDIS_RATE_LIMITER_LOCK_TIMEOUT
-            ):
-                theoretical_arrival_time = max(float(self.redis.get(key) or current_time), current_time)
+            async with self.redis.lock(f"rate_limiter_lock:{key}", timeout=self.lock_timeout):
+                theoretical_arrival_time_str = await self.redis.get(key)
+                theoretical_arrival_time = float(theoretical_arrival_time_str) if theoretical_arrival_time_str else current_time
                 
-                if theoretical_arrival_time - current_time <= period - burst_tolerance:
-                    new_theoretical_arrival_time = max(theoretical_arrival_time, current_time) + burst_tolerance
-                    self.redis.set(name=key, value=new_theoretical_arrival_time, ex=self.DEFAULT_TTL)
+                delta = theoretical_arrival_time - current_time
+                
+                if delta > period_in_seconds:
+                    new_theoretical_arrival_time = current_time + inter_request_interval
+                    await self.redis.set(key, new_theoretical_arrival_time, ex=self.default_ttl)
                     return True
-                
-                return False
-            
+                    
+                elif delta >= 0:
+                    new_theoretical_arrival_time = max(theoretical_arrival_time, current_time) + inter_request_interval
+                    await self.redis.set(key, new_theoretical_arrival_time, ex=self.default_ttl)
+                    return True
+                    
+                else: 
+                    return False
+                    
         except exceptions.LockError:
-            return False
+            return False 
         
     
 """
