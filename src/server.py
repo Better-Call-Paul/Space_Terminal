@@ -174,6 +174,24 @@ class SatelliteAPIClient:
         pass
     
     
+    async def get_tle(self):
+        
+        pass
+
+    
+    
+    async def get_satellite_positions(self):
+        pass
+
+        
+    async def get_visual_passes(self):
+        pass
+    
+
+    async def get_radio_passes(self):
+        pass
+    
+    
                     
         
         
