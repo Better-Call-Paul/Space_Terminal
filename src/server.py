@@ -1,7 +1,8 @@
+from asyncio import exceptions
 import os
 import requests
 import logging
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 import asyncio
 import aiohttp 
 import aioredis
@@ -16,6 +17,7 @@ from flask_socketio import SocketIO
 from flask_cors import CORS
  
 import redis
+from redis.exceptions import LockError
 
 from n2yoasync import N2YO, N2YOSatelliteCategory
 
@@ -36,18 +38,45 @@ def call():
 
 #GCRA algo with reids 
 class RateLimiter:
-    def __init__(self, limit: int, pool):
+    def __init__(self, limit: int, pool, port: int = 6379, host='localhost'):
         self.limit = limit
-        self.pool = pool
+        self.connection_pool = pool 
+        self.port = port 
+        self.host = host 
+        self.redis = redis.Redis(host=host, port=port)
+    
+
+    def is_allowed(self, key: str, period: timedelta) -> bool:
+        """
+        Returns whether or not a request is within the rate limit
+        Utilizes the GCRA algorithm:
         
-    """
-    Returns whether or not a request is within the rate limit
-    Utilizes the GCRA algorithm
-    """
-    def check_allowed(self, key: str, period: timedelta) -> bool:
+        """
         
+        current_time = datetime.now(timezone.utc).isoformat()
         
-        pass
+        period = int(period.total_seconds())
+        
+        burst_tolerance = period / self.limit 
+        
+        self.redis.setnx(key, 0)
+        
+        try:
+            with self.redis.lock(
+                "rate_limiter_lock" + key,
+                blocking_timeout=self.REDIS_RATE_LIMITER_LOCK_TIMEOUT
+            ):
+                theoretical_arrival_time = max(float(self.redis.get(key) or current_time), current_time)
+                
+                if theoretical_arrival_time - current_time <= period - burst_tolerance:
+                    new_theoretical_arrival_time = max(theoretical_arrival_time, current_time) + burst_tolerance
+                    self.redis.set(name=key, value=new_theoretical_arrival_time, ex=self.DEFAULT_TTL)
+                    return True
+                
+                return False
+            
+        except exceptions.LockError:
+            return False
         
     
 """
@@ -143,6 +172,8 @@ class SatelliteAPIClient:
         backoff_factor: float = 0.5
     ) -> dict[str, any]:
         pass
+    
+    
                     
         
         
