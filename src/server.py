@@ -1,5 +1,7 @@
 from asyncio import exceptions
 import os
+import aiohttp.connector
+import aioredis
 import requests
 import logging
 from datetime import timedelta, datetime, timezone
@@ -35,6 +37,23 @@ def call():
     return {"x" : ["x", "y"]}
 
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+class RateLimitExceededError(Exception):
+    "Exception raised for API Rate Limit errors "
+    def __init__(self, message="Rate Limit Exceeded. Please try again later."):
+        self.message = message
+        super().__init__(self.message)
+        
+        
 #GCRA algo with redis 
 class RateLimiter:
     
@@ -163,39 +182,116 @@ class SatelliteRequest:
     
 class SatelliteAPIClient:
     
-    def __init__(self, satellite_fetcher: SatelliteRequest, redis_url: str = "redis://localhost"):
-        self.fetcher = satellite_fetcher
-        self.redis = None
-        self.redis_url = redis_url
+    def __init__(self, satellite_request: SatelliteRequest, redis_pool: aioredis.Redis, rate_limiter: RateLimiter):
+        self.satellite_request = satellite_request
+        self.redis_pool = redis_pool
+        self.rate_limiter = rate_limiter
         
     async def fetch_from_api(
         self,
         endpoint: str,
         params: dict[str, any],
-        cache_key: str, 
+        cache_key: str,
+        period: timedelta,
         expiration: int = 3600,
         retries: int = 3,
         backoff_factor: float = 0.5
     ) -> dict[str, any]:
-        pass
-    
-    
-    async def get_tle(self):
         
-        pass
-
-    
-    
-    async def get_satellite_positions(self):
-        pass
-
         
-    async def get_visual_passes(self):
-        pass
-    
+        for attempt in range(1, retries + 1):
+            try:
 
-    async def get_radio_passes(self):
-        pass
+                allowed = await self.rate_limiter.is_allowed(cache_key, period)
+                if not allowed:
+                    raise RateLimitExceededError()
+
+                # First check if data is in Redis cache
+                cached_data = await self.redis.get(cache_key)
+                if cached_data:
+                    logger.info(f"Cache hit for key: {cache_key}")
+                    return json.loads(cached_data)
+                else:
+                    logger.info(f"Cache miss for key: {cache_key}. Making API call.")
+
+                params["apiKey"] = self.fetcher.API_KEY
+
+                # Construct the full URL
+                url = f"{self.fetcher.BASE_URL}{endpoint}"
+
+                # Make the API request
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            
+                            # Store the response in Redis cache
+                            await self.redis.set(cache_key, json.dumps(data), expire=expiration)
+                            logger.info(f"API call successful for endpoint: {endpoint}")
+                            return data
+                        elif response.status == 429:
+
+                            raise RateLimitExceededError("API responded with 429 Too Many Requests.")
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"HTTP Error {response.status}: {error_text}")
+                            return {}
+            except RateLimitExceededError as e:
+                if attempt < retries:
+                    wait_time = backoff_factor * (2 ** (attempt - 1))
+                    logger.warning(f"Attempt {attempt}/{retries}: {e}. Retrying in {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"Attempt {attempt}/{retries}: {e}. No more retries left.")
+                    raise e
+            except aiohttp.ClientError as e:
+                if attempt < retries:
+                    wait_time = backoff_factor * (2 ** (attempt - 1))
+                    logger.warning(f"Attempt {attempt}/{retries}: Network error: {e}. Retrying in {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"Attempt {attempt}/{retries}: Network error: {e}. No more retries left.")
+                    return {}
+
+        logger.error(f"All {retries} attempts failed for endpoint: {endpoint}")
+        return {}
+    
+    async def get_tle(self) -> dict[str, any]:
+        """Retrieve the Two Line Elements (TLE) for a satellite."""
+        endpoint = f"tle/{self.fetcher.SAT_ID}"
+        params = {}  
+        cache_key = f"tle:{self.fetcher.SAT_ID}"
+        period = timedelta(hours=1)  
+        return await self.fetch_from_api(endpoint, params, cache_key, period)
+
+    async def get_satellite_position(self) -> dict[str, any]:
+        """Retrieve future positions of the satellite."""
+        endpoint = f"positions/{self.fetcher.SAT_ID}/{self.fetcher.LAT}/{self.fetcher.LNG}/{self.fetcher.ALT}/{self.fetcher.SECONDS}"
+        params = {}  
+        cache_key = f"positions:{self.fetcher.SAT_ID}:{self.fetcher.LAT}:{self.fetcher.LNG}:{self.fetcher.ALT}:{self.fetcher.SECONDS}"
+        period = timedelta(seconds=self.fetcher.SECONDS)  
+        return await self.fetch_from_api(endpoint, params, cache_key, period)
+
+    async def get_visual_passes(self) -> dict[str, any]:
+        """Retrieve predicted visual passes for the satellite."""
+        endpoint = f"visualpasses/{self.fetcher.SAT_ID}/{self.fetcher.LAT}/{self.fetcher.LNG}/{self.fetcher.ALT}/{self.fetcher.DAYS}/{self.fetcher.MIN_VISIBILITY}"
+        params = {}  
+        cache_key = f"visualpasses:{self.fetcher.SAT_ID}:{self.fetcher.LAT}:{self.fetcher.LNG}:{self.fetcher.ALT}:{self.fetcher.DAYS}:{self.fetcher.MIN_VISIBILITY}"
+        period = timedelta(days=self.fetcher.DAYS) 
+        return await self.fetch_from_api(endpoint, params, cache_key, period)
+
+    async def get_radio_passes(self) -> dict[str, any]:
+        """Retrieve predicted radio passes for the satellite."""
+        endpoint = f"radiopasses/{self.fetcher.SAT_ID}/{self.fetcher.LAT}/{self.fetcher.LNG}/{self.fetcher.ALT}/{self.fetcher.DAYS}/{self.fetcher.MIN_ELEVATION}"
+        params = {}  
+        cache_key = f"radiopasses:{self.fetcher.SAT_ID}:{self.fetcher.LAT}:{self.fetcher.LNG}:{self.fetcher.ALT}:{self.fetcher.DAYS}:{self.fetcher.MIN_ELEVATION}"
+        period = timedelta(days=self.fetcher.DAYS) 
+        return await self.fetch_from_api(endpoint, params, cache_key, period)
+    
+    async def store_data_in_redis(self, key: str, data: dict[str, any], expiration: int = 3600):
+        """Store arbitrary data in Redis."""
+        await self.redis.set(key, json.dumps(data), expire=expiration)
+        logger.info(f"Data stored in Redis under key: {key}")
     
     
                     
