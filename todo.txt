@@ -1,0 +1,7 @@
+
+
+querying data
+processing and putting into data base
+apis for individual services 
+chromium based browser app
+
