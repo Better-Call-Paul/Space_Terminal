@@ -1,6 +1,11 @@
 
-
+Tomorrow:
 querying data
+utils for all satellite calculations 
+
+
+
+
 processing and putting into data base
 apis for individual services 
 chromium based browser app

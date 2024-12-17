@@ -29,6 +29,14 @@ else()
     message(FATAL_ERROR "libcurl not found!")
 endif()
 
+find_package(nlohmann_json 3.2.0 REQUIRED)
+
+if (nlohmann_json_FOUND)
+    message(STATUS "nlohmann_json version: ${nlohmann_json_VERSION}")
+else()
+    message(FATAL_ERROR "nlohmann_json not found!")
+endif()
+
 
 add_executable(SatelliteTerminal src/main.cpp)  
 
